@@ -1,6 +1,6 @@
 // AUTOMATICALLY GENERATED SERVICE
 import { APP_IDS } from '@/types/app';
-import type { Kostengruppen, Belegbuchungen, SteuerberaterUebergaben } from '@/types/app';
+import type { Kostengruppen, SteuerberaterUebergaben, Belegbuchungen } from '@/types/app';
 
 // Base Configuration
 const API_BASE_URL = 'https://my.living-apps.de/rest';
@@ -52,27 +52,6 @@ export class LivingAppsService {
     return callApi('DELETE', `/apps/${APP_IDS.KOSTENGRUPPEN}/records/${id}`);
   }
 
-  // --- BELEGBUCHUNGEN ---
-  static async getBelegbuchungen(): Promise<Belegbuchungen[]> {
-    const data = await callApi('GET', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records`);
-    return Object.entries(data).map(([id, rec]: [string, any]) => ({
-      record_id: id, ...rec
-    }));
-  }
-  static async getBelegbuchungenEntry(id: string): Promise<Belegbuchungen | undefined> {
-    const data = await callApi('GET', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records/${id}`);
-    return { record_id: data.id, ...data };
-  }
-  static async createBelegbuchungenEntry(fields: Belegbuchungen['fields']) {
-    return callApi('POST', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records`, { fields });
-  }
-  static async updateBelegbuchungenEntry(id: string, fields: Partial<Belegbuchungen['fields']>) {
-    return callApi('PATCH', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records/${id}`, { fields });
-  }
-  static async deleteBelegbuchungenEntry(id: string) {
-    return callApi('DELETE', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records/${id}`);
-  }
-
   // --- STEUERBERATER_UEBERGABEN ---
   static async getSteuerberaterUebergaben(): Promise<SteuerberaterUebergaben[]> {
     const data = await callApi('GET', `/apps/${APP_IDS.STEUERBERATER_UEBERGABEN}/records`);
@@ -92,6 +71,27 @@ export class LivingAppsService {
   }
   static async deleteSteuerberaterUebergabenEntry(id: string) {
     return callApi('DELETE', `/apps/${APP_IDS.STEUERBERATER_UEBERGABEN}/records/${id}`);
+  }
+
+  // --- BELEGBUCHUNGEN ---
+  static async getBelegbuchungen(): Promise<Belegbuchungen[]> {
+    const data = await callApi('GET', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records`);
+    return Object.entries(data).map(([id, rec]: [string, any]) => ({
+      record_id: id, ...rec
+    }));
+  }
+  static async getBelegbuchungenEntry(id: string): Promise<Belegbuchungen | undefined> {
+    const data = await callApi('GET', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records/${id}`);
+    return { record_id: data.id, ...data };
+  }
+  static async createBelegbuchungenEntry(fields: Belegbuchungen['fields']) {
+    return callApi('POST', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records`, { fields });
+  }
+  static async updateBelegbuchungenEntry(id: string, fields: Partial<Belegbuchungen['fields']>) {
+    return callApi('PATCH', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records/${id}`, { fields });
+  }
+  static async deleteBelegbuchungenEntry(id: string) {
+    return callApi('DELETE', `/apps/${APP_IDS.BELEGBUCHUNGEN}/records/${id}`);
   }
 
 }

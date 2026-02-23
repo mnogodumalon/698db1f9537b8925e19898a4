@@ -1,36 +1,95 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
-import type { Kostengruppen, Belegbuchungen, SteuerberaterUebergaben } from '@/types/app';
-import { LivingAppsService, extractRecordId, createRecordUrl } from '@/services/livingAppsService';
-import { APP_IDS } from '@/types/app';
-import { format, parseISO, startOfWeek, endOfWeek, isWithinInterval } from 'date-fns';
-import { de } from 'date-fns/locale';
+import { useState, useEffect, useMemo } from 'react';
 import { toast } from 'sonner';
+import { format, parseISO } from 'date-fns';
+import { de } from 'date-fns/locale';
+import {
+  TrendingUp,
+  TrendingDown,
+  FolderOpen,
+  Plus,
+  Pencil,
+  Trash2,
+  FileText,
+  ChevronDown,
+  ChevronRight,
+} from 'lucide-react';
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+} from 'recharts';
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import type {
+  Kostengruppen,
+  SteuerberaterUebergaben,
+  Belegbuchungen,
+} from '@/types/app';
+import { APP_IDS } from '@/types/app';
+import {
+  LivingAppsService,
+  extractRecordId,
+  createRecordUrl,
+} from '@/services/livingAppsService';
+
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Skeleton } from '@/components/ui/skeleton';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
-  Plus, Pencil, Trash2, TrendingUp, TrendingDown, FileText,
-  Receipt, AlertCircle, RefreshCw,
-} from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Toaster } from '@/components/ui/sonner';
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
 
 function formatCurrency(value: number | null | undefined): string {
   if (value == null) return '-';
-  return new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' }).format(value);
+  return new Intl.NumberFormat('de-DE', {
+    style: 'currency',
+    currency: 'EUR',
+  }).format(value);
 }
 
 function formatDate(dateStr: string | null | undefined): string {
@@ -48,53 +107,543 @@ const BELEGART_LABELS: Record<string, string> = {
   kassenbeleg: 'Kassenbeleg',
   bankbeleg: 'Bankbeleg',
   gutschrift: 'Gutschrift',
-  sonstiger_beleg: 'Sonstiger Beleg',
   eingangsrechnung: 'Eingangsrechnung',
+  sonstiger_beleg: 'Sonstiger Beleg',
 };
 
 const INCOME_TYPES = ['ausgangsrechnung', 'gutschrift'];
-const EXPENSE_TYPES = ['eingangsrechnung', 'quittung', 'kassenbeleg', 'bankbeleg', 'sonstiger_beleg'];
+const EXPENSE_TYPES = ['eingangsrechnung', 'quittung', 'kassenbeleg', 'bankbeleg'];
 
-const CATEGORY_COLORS = [
-  'hsl(185 62% 34%)',
-  'hsl(152 55% 40%)',
-  'hsl(210 25% 55%)',
-  'hsl(35 85% 55%)',
-  'hsl(280 45% 55%)',
-  'hsl(340 65% 50%)',
-  'hsl(60 70% 45%)',
-  'hsl(20 80% 50%)',
-];
+// ============================================
+// CRUD DIALOGS
+// ============================================
 
-function todayStr(): string {
-  return format(new Date(), 'yyyy-MM-dd');
+interface BelegDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  record?: Belegbuchungen | null;
+  kostengruppen: Kostengruppen[];
+  onSuccess: () => void;
 }
 
-function firstOfMonthStr(): string {
-  const d = new Date();
-  return format(new Date(d.getFullYear(), d.getMonth(), 1), 'yyyy-MM-dd');
+function BelegDialog({
+  open,
+  onOpenChange,
+  record,
+  kostengruppen,
+  onSuccess,
+}: BelegDialogProps) {
+  const isEditing = !!record;
+  const [submitting, setSubmitting] = useState(false);
+  const [formData, setFormData] = useState({
+    belegdatum: '',
+    belegnummer: '',
+    belegbeschreibung: '',
+    betrag: '',
+    belegart: '',
+    kostengruppe: '',
+    notizen: '',
+  });
+
+  useEffect(() => {
+    if (open) {
+      const kostengruppeId = record?.fields.kostengruppe
+        ? extractRecordId(record.fields.kostengruppe)
+        : '';
+      setFormData({
+        belegdatum: record?.fields.belegdatum?.split('T')[0] || new Date().toISOString().split('T')[0],
+        belegnummer: record?.fields.belegnummer || '',
+        belegbeschreibung: record?.fields.belegbeschreibung || '',
+        betrag: record?.fields.betrag?.toString() || '',
+        belegart: record?.fields.belegart || '',
+        kostengruppe: kostengruppeId || '',
+        notizen: record?.fields.notizen || '',
+      });
+    }
+  }, [open, record]);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+
+    try {
+      const apiData: Partial<Belegbuchungen['fields']> = {
+        belegdatum: formData.belegdatum,
+        belegnummer: formData.belegnummer,
+        belegbeschreibung: formData.belegbeschreibung || undefined,
+        betrag: formData.betrag ? parseFloat(formData.betrag) : undefined,
+        belegart: (formData.belegart || undefined) as Belegbuchungen['fields']['belegart'],
+        kostengruppe: formData.kostengruppe
+          ? createRecordUrl(APP_IDS.KOSTENGRUPPEN, formData.kostengruppe)
+          : undefined,
+        notizen: formData.notizen || undefined,
+      };
+
+      if (isEditing) {
+        await LivingAppsService.updateBelegbuchungenEntry(record!.record_id, apiData);
+        toast.success('Beleg aktualisiert');
+      } else {
+        await LivingAppsService.createBelegbuchungenEntry(apiData);
+        toast.success('Beleg erstellt');
+      }
+      onOpenChange(false);
+      onSuccess();
+    } catch (err) {
+      toast.error(
+        `Fehler beim ${isEditing ? 'Speichern' : 'Erstellen'}: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>
+            {isEditing ? 'Beleg bearbeiten' : 'Neuen Beleg erfassen'}
+          </DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="belegdatum">Belegdatum *</Label>
+              <Input
+                id="belegdatum"
+                type="date"
+                value={formData.belegdatum}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, belegdatum: e.target.value }))
+                }
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="belegnummer">Belegnummer *</Label>
+              <Input
+                id="belegnummer"
+                value={formData.belegnummer}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, belegnummer: e.target.value }))
+                }
+                required
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="belegbeschreibung">Beschreibung</Label>
+            <Textarea
+              id="belegbeschreibung"
+              value={formData.belegbeschreibung}
+              onChange={(e) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  belegbeschreibung: e.target.value,
+                }))
+              }
+              rows={2}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="betrag">Betrag (EUR) *</Label>
+              <Input
+                id="betrag"
+                type="number"
+                step="0.01"
+                value={formData.betrag}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, betrag: e.target.value }))
+                }
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="belegart">Belegart</Label>
+              <Select
+                value={formData.belegart || 'none'}
+                onValueChange={(v) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    belegart: v === 'none' ? '' : v,
+                  }))
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Belegart wählen" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Keine Auswahl</SelectItem>
+                  {Object.entries(BELEGART_LABELS).map(([key, label]) => (
+                    <SelectItem key={key} value={key}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="kostengruppe">Kostengruppe</Label>
+            <Select
+              value={formData.kostengruppe || 'none'}
+              onValueChange={(v) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  kostengruppe: v === 'none' ? '' : v,
+                }))
+              }
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Kostengruppe wählen" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Keine Auswahl</SelectItem>
+                {kostengruppen.map((kg) => (
+                  <SelectItem key={kg.record_id} value={kg.record_id}>
+                    {kg.fields.kostengruppenname || 'Unbenannt'}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="notizen">Notizen</Label>
+            <Textarea
+              id="notizen"
+              value={formData.notizen}
+              onChange={(e) =>
+                setFormData((prev) => ({ ...prev, notizen: e.target.value }))
+              }
+              rows={2}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              Abbrechen
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? 'Speichert...' : isEditing ? 'Speichern' : 'Erstellen'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
-// ─── Delete Confirmation Dialog ─────────────────────────────────────────────
+interface KostengruppeDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  record?: Kostengruppen | null;
+  onSuccess: () => void;
+}
+
+function KostengruppeDialog({
+  open,
+  onOpenChange,
+  record,
+  onSuccess,
+}: KostengruppeDialogProps) {
+  const isEditing = !!record;
+  const [submitting, setSubmitting] = useState(false);
+  const [formData, setFormData] = useState({
+    kostengruppenname: '',
+    kostengruppennummer: '',
+    beschreibung: '',
+  });
+
+  useEffect(() => {
+    if (open) {
+      setFormData({
+        kostengruppenname: record?.fields.kostengruppenname || '',
+        kostengruppennummer: record?.fields.kostengruppennummer || '',
+        beschreibung: record?.fields.beschreibung || '',
+      });
+    }
+  }, [open, record]);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+
+    try {
+      const apiData = {
+        kostengruppenname: formData.kostengruppenname,
+        kostengruppennummer: formData.kostengruppennummer || undefined,
+        beschreibung: formData.beschreibung || undefined,
+      };
+
+      if (isEditing) {
+        await LivingAppsService.updateKostengruppenEntry(record!.record_id, apiData);
+        toast.success('Kostengruppe aktualisiert');
+      } else {
+        await LivingAppsService.createKostengruppenEntry(apiData);
+        toast.success('Kostengruppe erstellt');
+      }
+      onOpenChange(false);
+      onSuccess();
+    } catch (err) {
+      toast.error(
+        `Fehler: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {isEditing ? 'Kostengruppe bearbeiten' : 'Neue Kostengruppe'}
+          </DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="kostengruppenname">Name *</Label>
+            <Input
+              id="kostengruppenname"
+              value={formData.kostengruppenname}
+              onChange={(e) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  kostengruppenname: e.target.value,
+                }))
+              }
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="kostengruppennummer">Nummer</Label>
+            <Input
+              id="kostengruppennummer"
+              value={formData.kostengruppennummer}
+              onChange={(e) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  kostengruppennummer: e.target.value,
+                }))
+              }
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="beschreibung">Beschreibung</Label>
+            <Textarea
+              id="beschreibung"
+              value={formData.beschreibung}
+              onChange={(e) =>
+                setFormData((prev) => ({ ...prev, beschreibung: e.target.value }))
+              }
+              rows={3}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              Abbrechen
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? 'Speichert...' : isEditing ? 'Speichern' : 'Erstellen'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface UebergabeDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  record?: SteuerberaterUebergaben | null;
+  onSuccess: () => void;
+}
+
+function UebergabeDialog({
+  open,
+  onOpenChange,
+  record,
+  onSuccess,
+}: UebergabeDialogProps) {
+  const isEditing = !!record;
+  const [submitting, setSubmitting] = useState(false);
+  const today = new Date().toISOString().split('T')[0];
+  const firstOfMonth = new Date();
+  firstOfMonth.setDate(1);
+  const firstOfMonthStr = firstOfMonth.toISOString().split('T')[0];
+
+  const [formData, setFormData] = useState({
+    stichtag: '',
+    periode_von: '',
+    periode_bis: '',
+    bemerkungen: '',
+  });
+
+  useEffect(() => {
+    if (open) {
+      setFormData({
+        stichtag: record?.fields.stichtag?.split('T')[0] || today,
+        periode_von: record?.fields.periode_von?.split('T')[0] || firstOfMonthStr,
+        periode_bis: record?.fields.periode_bis?.split('T')[0] || today,
+        bemerkungen: record?.fields.bemerkungen || '',
+      });
+    }
+  }, [open, record, today, firstOfMonthStr]);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+
+    try {
+      const apiData = {
+        stichtag: formData.stichtag,
+        periode_von: formData.periode_von,
+        periode_bis: formData.periode_bis,
+        bemerkungen: formData.bemerkungen || undefined,
+      };
+
+      if (isEditing) {
+        await LivingAppsService.updateSteuerberaterUebergabenEntry(
+          record!.record_id,
+          apiData
+        );
+        toast.success('Übergabe aktualisiert');
+      } else {
+        await LivingAppsService.createSteuerberaterUebergabenEntry(apiData);
+        toast.success('Übergabe erstellt');
+      }
+      onOpenChange(false);
+      onSuccess();
+    } catch (err) {
+      toast.error(
+        `Fehler: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>
+            {isEditing ? 'Übergabe bearbeiten' : 'Neue Übergabe'}
+          </DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="stichtag">Stichtag *</Label>
+            <Input
+              id="stichtag"
+              type="date"
+              value={formData.stichtag}
+              onChange={(e) =>
+                setFormData((prev) => ({ ...prev, stichtag: e.target.value }))
+              }
+              required
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="periode_von">Periode von *</Label>
+              <Input
+                id="periode_von"
+                type="date"
+                value={formData.periode_von}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, periode_von: e.target.value }))
+                }
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="periode_bis">Periode bis *</Label>
+              <Input
+                id="periode_bis"
+                type="date"
+                value={formData.periode_bis}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, periode_bis: e.target.value }))
+                }
+                required
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="bemerkungen">Bemerkungen</Label>
+            <Textarea
+              id="bemerkungen"
+              value={formData.bemerkungen}
+              onChange={(e) =>
+                setFormData((prev) => ({ ...prev, bemerkungen: e.target.value }))
+              }
+              rows={3}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+            >
+              Abbrechen
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? 'Speichert...' : isEditing ? 'Speichern' : 'Erstellen'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface DeleteConfirmDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: string;
+  onConfirm: () => Promise<void>;
+}
 
 function DeleteConfirmDialog({
-  open, onOpenChange, recordName, onConfirm,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  recordName: string;
-  onConfirm: () => Promise<void>;
-}) {
+  open,
+  onOpenChange,
+  title,
+  description,
+  onConfirm,
+}: DeleteConfirmDialogProps) {
   const [deleting, setDeleting] = useState(false);
 
   async function handleDelete() {
     setDeleting(true);
     try {
       await onConfirm();
-      toast.success(`"${recordName}" wurde gelöscht.`);
       onOpenChange(false);
     } catch {
-      toast.error('Eintrag konnte nicht gelöscht werden.');
+      // Error handling done in onConfirm
     } finally {
       setDeleting(false);
     }
@@ -104,10 +653,8 @@ function DeleteConfirmDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Eintrag löschen?</AlertDialogTitle>
-          <AlertDialogDescription>
-            Möchtest du &quot;{recordName}&quot; wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.
-          </AlertDialogDescription>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Abbrechen</AlertDialogCancel>
@@ -124,1183 +671,858 @@ function DeleteConfirmDialog({
   );
 }
 
-// ─── Kostengruppen Dialog ───────────────────────────────────────────────────
-
-function KostengruppenDialog({
-  open, onOpenChange, record, onSuccess,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  record?: Kostengruppen | null;
-  onSuccess: () => void;
-}) {
-  const isEditing = !!record;
-  const [submitting, setSubmitting] = useState(false);
-  const [formData, setFormData] = useState({
-    kostengruppenname: '',
-    kostengruppennummer: '',
-    beschreibung: '',
-  });
-
-  useEffect(() => {
-    if (open) {
-      setFormData({
-        kostengruppenname: record?.fields.kostengruppenname ?? '',
-        kostengruppennummer: record?.fields.kostengruppennummer ?? '',
-        beschreibung: record?.fields.beschreibung ?? '',
-      });
-    }
-  }, [open, record]);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    try {
-      if (isEditing) {
-        await LivingAppsService.updateKostengruppenEntry(record!.record_id, formData);
-        toast.success('Kostengruppe aktualisiert.');
-      } else {
-        await LivingAppsService.createKostengruppenEntry(formData);
-        toast.success('Kostengruppe erstellt.');
-      }
-      onOpenChange(false);
-      onSuccess();
-    } catch (err) {
-      toast.error(`Fehler: ${err instanceof Error ? err.message : 'Unbekannt'}`);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{isEditing ? 'Kostengruppe bearbeiten' : 'Neue Kostengruppe'}</DialogTitle>
-        </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="kg-name">Name *</Label>
-            <Input
-              id="kg-name"
-              value={formData.kostengruppenname}
-              onChange={e => setFormData(p => ({ ...p, kostengruppenname: e.target.value }))}
-              required
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="kg-nummer">Nummer</Label>
-            <Input
-              id="kg-nummer"
-              value={formData.kostengruppennummer}
-              onChange={e => setFormData(p => ({ ...p, kostengruppennummer: e.target.value }))}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="kg-beschreibung">Beschreibung</Label>
-            <Textarea
-              id="kg-beschreibung"
-              value={formData.beschreibung}
-              onChange={e => setFormData(p => ({ ...p, beschreibung: e.target.value }))}
-            />
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Abbrechen</Button>
-            <Button type="submit" disabled={submitting}>
-              {submitting ? 'Speichert...' : isEditing ? 'Speichern' : 'Erstellen'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ─── Belegbuchungen Dialog ──────────────────────────────────────────────────
-
-function BelegbuchungenDialog({
-  open, onOpenChange, record, onSuccess, kostengruppen,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  record?: Belegbuchungen | null;
-  onSuccess: () => void;
-  kostengruppen: Kostengruppen[];
-}) {
-  const isEditing = !!record;
-  const [submitting, setSubmitting] = useState(false);
-  const [formData, setFormData] = useState({
-    belegdatum: todayStr(),
-    belegnummer: '',
-    belegbeschreibung: '',
-    betrag: '',
-    belegart: '',
-    kostengruppe: '',
-    notizen: '',
-  });
-
-  useEffect(() => {
-    if (open) {
-      const kgId = record?.fields.kostengruppe ? extractRecordId(record.fields.kostengruppe) : '';
-      setFormData({
-        belegdatum: record?.fields.belegdatum?.split('T')[0] ?? todayStr(),
-        belegnummer: record?.fields.belegnummer ?? '',
-        belegbeschreibung: record?.fields.belegbeschreibung ?? '',
-        betrag: record?.fields.betrag != null ? String(record.fields.betrag) : '',
-        belegart: record?.fields.belegart ?? '',
-        kostengruppe: kgId ?? '',
-        notizen: record?.fields.notizen ?? '',
-      });
-    }
-  }, [open, record]);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    try {
-      const apiData: Record<string, unknown> = {
-        belegdatum: formData.belegdatum,
-        belegnummer: formData.belegnummer || undefined,
-        belegbeschreibung: formData.belegbeschreibung || undefined,
-        betrag: formData.betrag ? parseFloat(formData.betrag) : undefined,
-        belegart: formData.belegart || undefined,
-        kostengruppe: formData.kostengruppe
-          ? createRecordUrl(APP_IDS.KOSTENGRUPPEN, formData.kostengruppe)
-          : null,
-        notizen: formData.notizen || undefined,
-      };
-
-      if (isEditing) {
-        await LivingAppsService.updateBelegbuchungenEntry(record!.record_id, apiData as Belegbuchungen['fields']);
-        toast.success('Buchung aktualisiert.');
-      } else {
-        await LivingAppsService.createBelegbuchungenEntry(apiData as Belegbuchungen['fields']);
-        toast.success('Buchung erstellt.');
-      }
-      onOpenChange(false);
-      onSuccess();
-    } catch (err) {
-      toast.error(`Fehler: ${err instanceof Error ? err.message : 'Unbekannt'}`);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{isEditing ? 'Buchung bearbeiten' : 'Neue Buchung erfassen'}</DialogTitle>
-        </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="bb-datum">Belegdatum *</Label>
-              <Input
-                id="bb-datum"
-                type="date"
-                value={formData.belegdatum}
-                onChange={e => setFormData(p => ({ ...p, belegdatum: e.target.value }))}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="bb-betrag">Betrag (EUR) *</Label>
-              <Input
-                id="bb-betrag"
-                type="number"
-                step="0.01"
-                value={formData.betrag}
-                onChange={e => setFormData(p => ({ ...p, betrag: e.target.value }))}
-                required
-              />
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="bb-nummer">Belegnummer</Label>
-            <Input
-              id="bb-nummer"
-              value={formData.belegnummer}
-              onChange={e => setFormData(p => ({ ...p, belegnummer: e.target.value }))}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="bb-beschreibung">Beschreibung</Label>
-            <Textarea
-              id="bb-beschreibung"
-              value={formData.belegbeschreibung}
-              onChange={e => setFormData(p => ({ ...p, belegbeschreibung: e.target.value }))}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Belegart</Label>
-              <Select
-                value={formData.belegart || 'none'}
-                onValueChange={v => setFormData(p => ({ ...p, belegart: v === 'none' ? '' : v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Auswählen..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Keine Auswahl</SelectItem>
-                  {Object.entries(BELEGART_LABELS).map(([key, label]) => (
-                    <SelectItem key={key} value={key}>{label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Kostengruppe</Label>
-              <Select
-                value={formData.kostengruppe || 'none'}
-                onValueChange={v => setFormData(p => ({ ...p, kostengruppe: v === 'none' ? '' : v }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Auswählen..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Keine Auswahl</SelectItem>
-                  {kostengruppen.map(kg => (
-                    <SelectItem key={kg.record_id} value={kg.record_id}>
-                      {kg.fields.kostengruppenname || kg.record_id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="bb-notizen">Notizen</Label>
-            <Textarea
-              id="bb-notizen"
-              value={formData.notizen}
-              onChange={e => setFormData(p => ({ ...p, notizen: e.target.value }))}
-            />
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Abbrechen</Button>
-            <Button type="submit" disabled={submitting}>
-              {submitting ? 'Speichert...' : isEditing ? 'Speichern' : 'Erstellen'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ─── Steuerberater-Übergaben Dialog ─────────────────────────────────────────
-
-function UebergabenDialog({
-  open, onOpenChange, record, onSuccess,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-  record?: SteuerberaterUebergaben | null;
-  onSuccess: () => void;
-}) {
-  const isEditing = !!record;
-  const [submitting, setSubmitting] = useState(false);
-  const [formData, setFormData] = useState({
-    stichtag: todayStr(),
-    periode_von: firstOfMonthStr(),
-    periode_bis: todayStr(),
-    bemerkungen: '',
-  });
-
-  useEffect(() => {
-    if (open) {
-      setFormData({
-        stichtag: record?.fields.stichtag?.split('T')[0] ?? todayStr(),
-        periode_von: record?.fields.periode_von?.split('T')[0] ?? firstOfMonthStr(),
-        periode_bis: record?.fields.periode_bis?.split('T')[0] ?? todayStr(),
-        bemerkungen: record?.fields.bemerkungen ?? '',
-      });
-    }
-  }, [open, record]);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    try {
-      const apiData = {
-        stichtag: formData.stichtag,
-        periode_von: formData.periode_von,
-        periode_bis: formData.periode_bis,
-        bemerkungen: formData.bemerkungen || undefined,
-      };
-
-      if (isEditing) {
-        await LivingAppsService.updateSteuerberaterUebergabenEntry(record!.record_id, apiData);
-        toast.success('Übergabe aktualisiert.');
-      } else {
-        await LivingAppsService.createSteuerberaterUebergabenEntry(apiData);
-        toast.success('Übergabe erstellt.');
-      }
-      onOpenChange(false);
-      onSuccess();
-    } catch (err) {
-      toast.error(`Fehler: ${err instanceof Error ? err.message : 'Unbekannt'}`);
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{isEditing ? 'Übergabe bearbeiten' : 'Neue Übergabe'}</DialogTitle>
-        </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="ue-stichtag">Stichtag *</Label>
-            <Input
-              id="ue-stichtag"
-              type="date"
-              value={formData.stichtag}
-              onChange={e => setFormData(p => ({ ...p, stichtag: e.target.value }))}
-              required
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="ue-von">Periode von *</Label>
-              <Input
-                id="ue-von"
-                type="date"
-                value={formData.periode_von}
-                onChange={e => setFormData(p => ({ ...p, periode_von: e.target.value }))}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="ue-bis">Periode bis *</Label>
-              <Input
-                id="ue-bis"
-                type="date"
-                value={formData.periode_bis}
-                onChange={e => setFormData(p => ({ ...p, periode_bis: e.target.value }))}
-                required
-              />
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="ue-bemerkungen">Bemerkungen</Label>
-            <Textarea
-              id="ue-bemerkungen"
-              value={formData.bemerkungen}
-              onChange={e => setFormData(p => ({ ...p, bemerkungen: e.target.value }))}
-            />
-          </div>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Abbrechen</Button>
-            <Button type="submit" disabled={submitting}>
-              {submitting ? 'Speichert...' : isEditing ? 'Speichern' : 'Erstellen'}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ─── Loading State ──────────────────────────────────────────────────────────
+// ============================================
+// LOADING STATE
+// ============================================
 
 function LoadingState() {
   return (
-    <div className="min-h-screen bg-background p-4 md:p-8">
-      <div className="max-w-[1280px] mx-auto space-y-6">
+    <div className="min-h-screen bg-background p-4 md:p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Header skeleton */}
         <div className="flex items-center justify-between">
-          <Skeleton className="h-8 w-64" />
-          <Skeleton className="h-10 w-48" />
+          <Skeleton className="h-8 w-48" />
+          <Skeleton className="h-10 w-40" />
         </div>
-        <Skeleton className="h-48 w-full rounded-lg" />
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+        {/* Hero skeleton */}
+        <Skeleton className="h-40 w-full rounded-xl" />
+
+        {/* Stats skeleton */}
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           <Skeleton className="h-24 rounded-lg" />
           <Skeleton className="h-24 rounded-lg" />
-          <Skeleton className="h-24 rounded-lg" />
+          <Skeleton className="h-24 rounded-lg hidden md:block" />
         </div>
-        <Skeleton className="h-80 w-full rounded-lg" />
+
+        {/* Table skeleton */}
+        <Skeleton className="h-96 rounded-lg" />
       </div>
     </div>
   );
 }
 
-// ─── Error State ────────────────────────────────────────────────────────────
+// ============================================
+// EMPTY STATE
+// ============================================
 
-function ErrorState({ error, onRetry }: { error: Error; onRetry: () => void }) {
+function EmptyState({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description: string;
+  action?: React.ReactNode;
+}) {
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
-      <Card className="max-w-md w-full">
-        <CardContent className="pt-6 text-center space-y-4">
-          <AlertCircle className="h-12 w-12 text-destructive mx-auto" />
-          <h2 className="text-lg font-semibold">Fehler beim Laden</h2>
-          <p className="text-sm text-muted-foreground">{error.message}</p>
-          <Button onClick={onRetry} variant="outline">
-            <RefreshCw className="h-4 w-4 mr-2" /> Erneut versuchen
-          </Button>
-        </CardContent>
-      </Card>
+    <div className="flex flex-col items-center justify-center py-12 text-center">
+      <FileText className="h-12 w-12 text-muted-foreground mb-4" />
+      <h3 className="text-lg font-medium mb-2">{title}</h3>
+      <p className="text-muted-foreground mb-4 max-w-sm">{description}</p>
+      {action}
     </div>
   );
 }
 
-// ─── Empty State ────────────────────────────────────────────────────────────
-
-function EmptyListState({ title, onAdd }: { title: string; onAdd: () => void }) {
-  return (
-    <div className="text-center py-8 text-muted-foreground">
-      <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
-      <p className="text-sm">{title}</p>
-      <Button size="sm" variant="outline" className="mt-3" onClick={onAdd}>
-        <Plus className="h-4 w-4 mr-1" /> Erstellen
-      </Button>
-    </div>
-  );
-}
-
-// ─── Main Dashboard ─────────────────────────────────────────────────────────
+// ============================================
+// MAIN DASHBOARD COMPONENT
+// ============================================
 
 export default function Dashboard() {
-  const [buchungen, setBuchungen] = useState<Belegbuchungen[]>([]);
+  // Data state
+  const [belegbuchungen, setBelegbuchungen] = useState<Belegbuchungen[]>([]);
   const [kostengruppen, setKostengruppen] = useState<Kostengruppen[]>([]);
   const [uebergaben, setUebergaben] = useState<SteuerberaterUebergaben[]>([]);
-
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
-  // Filter
-  const [belegartFilter, setBelegartFilter] = useState('all');
+  // UI state
+  const [showBelegDialog, setShowBelegDialog] = useState(false);
+  const [editBeleg, setEditBeleg] = useState<Belegbuchungen | null>(null);
+  const [deleteBeleg, setDeleteBeleg] = useState<Belegbuchungen | null>(null);
 
-  // CRUD state - Buchungen
-  const [showBuchungDialog, setShowBuchungDialog] = useState(false);
-  const [editBuchung, setEditBuchung] = useState<Belegbuchungen | null>(null);
-  const [deleteBuchung, setDeleteBuchung] = useState<Belegbuchungen | null>(null);
+  const [showKostengruppeDialog, setShowKostengruppeDialog] = useState(false);
+  const [editKostengruppe, setEditKostengruppe] = useState<Kostengruppen | null>(null);
+  const [deleteKostengruppe, setDeleteKostengruppe] = useState<Kostengruppen | null>(null);
 
-  // CRUD state - Kostengruppen
-  const [showKgDialog, setShowKgDialog] = useState(false);
-  const [editKg, setEditKg] = useState<Kostengruppen | null>(null);
-  const [deleteKg, setDeleteKg] = useState<Kostengruppen | null>(null);
+  const [showUebergabeDialog, setShowUebergabeDialog] = useState(false);
+  const [editUebergabe, setEditUebergabe] = useState<SteuerberaterUebergaben | null>(null);
+  const [deleteUebergabe, setDeleteUebergabe] = useState<SteuerberaterUebergaben | null>(null);
 
-  // CRUD state - Übergaben
-  const [showUeDialog, setShowUeDialog] = useState(false);
-  const [editUe, setEditUe] = useState<SteuerberaterUebergaben | null>(null);
-  const [deleteUe, setDeleteUe] = useState<SteuerberaterUebergaben | null>(null);
+  // Collapsible state for mobile
+  const [kostengruppenOpen, setKostengruppenOpen] = useState(false);
+  const [uebergabenOpen, setUebergabenOpen] = useState(false);
 
-  // Show more
-  const [showAllBuchungen, setShowAllBuchungen] = useState(false);
-  const [showAllUebergaben, setShowAllUebergaben] = useState(false);
-
-  // ─── Data fetching ──────────────────────────────────────────────────────
-
-  const fetchData = useCallback(async () => {
+  // Fetch data
+  async function fetchData() {
     try {
       setLoading(true);
       setError(null);
-      const [b, k, u] = await Promise.all([
+      const [bel, kg, ueb] = await Promise.all([
         LivingAppsService.getBelegbuchungen(),
         LivingAppsService.getKostengruppen(),
         LivingAppsService.getSteuerberaterUebergaben(),
       ]);
-      setBuchungen(b);
-      setKostengruppen(k);
-      setUebergaben(u);
+      setBelegbuchungen(bel);
+      setKostengruppen(kg);
+      setUebergaben(ueb);
     } catch (err) {
-      setError(err instanceof Error ? err : new Error('Unbekannter Fehler'));
+      setError(err instanceof Error ? err : new Error('Fehler beim Laden'));
     } finally {
       setLoading(false);
     }
+  }
+
+  useEffect(() => {
+    fetchData();
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // Computed values
+  const totalBetrag = useMemo(() => {
+    return belegbuchungen.reduce((sum, b) => sum + (b.fields.betrag || 0), 0);
+  }, [belegbuchungen]);
 
-  const refreshBuchungen = useCallback(async () => {
-    try {
-      const b = await LivingAppsService.getBelegbuchungen();
-      setBuchungen(b);
-    } catch { /* toast already shown in dialog */ }
-  }, []);
+  const einnahmen = useMemo(() => {
+    return belegbuchungen
+      .filter((b) => INCOME_TYPES.includes(b.fields.belegart || ''))
+      .reduce((sum, b) => sum + (b.fields.betrag || 0), 0);
+  }, [belegbuchungen]);
 
-  const refreshKostengruppen = useCallback(async () => {
-    try {
-      const k = await LivingAppsService.getKostengruppen();
-      setKostengruppen(k);
-    } catch { /* toast already shown */ }
-  }, []);
+  const ausgaben = useMemo(() => {
+    return belegbuchungen
+      .filter((b) => EXPENSE_TYPES.includes(b.fields.belegart || ''))
+      .reduce((sum, b) => sum + (b.fields.betrag || 0), 0);
+  }, [belegbuchungen]);
 
-  const refreshUebergaben = useCallback(async () => {
-    try {
-      const u = await LivingAppsService.getSteuerberaterUebergaben();
-      setUebergaben(u);
-    } catch { /* toast already shown */ }
-  }, []);
+  const sortedBelegbuchungen = useMemo(() => {
+    return [...belegbuchungen].sort((a, b) => {
+      const dateA = a.fields.belegdatum || a.createdat;
+      const dateB = b.fields.belegdatum || b.createdat;
+      return dateB.localeCompare(dateA);
+    });
+  }, [belegbuchungen]);
 
-  // ─── Computed data ──────────────────────────────────────────────────────
+  const chartData = useMemo(() => {
+    const grouped: Record<string, number> = {};
+    belegbuchungen.forEach((b) => {
+      const date = (b.fields.belegdatum || b.createdat).split('T')[0];
+      grouped[date] = (grouped[date] || 0) + (b.fields.betrag || 0);
+    });
 
-  const kgMap = useMemo(() => {
-    const m = new Map<string, Kostengruppen>();
-    kostengruppen.forEach(kg => m.set(kg.record_id, kg));
-    return m;
+    return Object.entries(grouped)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-30)
+      .map(([date, value]) => ({
+        date: format(parseISO(date), 'dd.MM', { locale: de }),
+        value,
+      }));
+  }, [belegbuchungen]);
+
+  const kostengruppenMap = useMemo(() => {
+    const map = new Map<string, Kostengruppen>();
+    kostengruppen.forEach((kg) => map.set(kg.record_id, kg));
+    return map;
   }, [kostengruppen]);
 
-  const totalBetrag = useMemo(
-    () => buchungen.reduce((sum, b) => sum + (b.fields.betrag ?? 0), 0),
-    [buchungen],
-  );
-
-  const einnahmen = useMemo(
-    () => buchungen
-      .filter(b => b.fields.belegart && INCOME_TYPES.includes(b.fields.belegart))
-      .reduce((sum, b) => sum + (b.fields.betrag ?? 0), 0),
-    [buchungen],
-  );
-
-  const ausgaben = useMemo(
-    () => buchungen
-      .filter(b => b.fields.belegart && EXPENSE_TYPES.includes(b.fields.belegart))
-      .reduce((sum, b) => sum + (b.fields.betrag ?? 0), 0),
-    [buchungen],
-  );
-
-  const belegeThisWeek = useMemo(() => {
-    const now = new Date();
-    const weekStart = startOfWeek(now, { weekStartsOn: 1 });
-    const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
-    return buchungen.filter(b => {
-      if (!b.fields.belegdatum) return false;
-      try {
-        const d = parseISO(b.fields.belegdatum.split('T')[0]);
-        return isWithinInterval(d, { start: weekStart, end: weekEnd });
-      } catch {
-        return false;
-      }
-    }).length;
-  }, [buchungen]);
-
-  // Kostengruppen breakdown
-  const kgBreakdown = useMemo(() => {
-    const groups: { id: string; name: string; total: number }[] = [];
-    const groupMap = new Map<string, number>();
-    let unassigned = 0;
-
-    buchungen.forEach(b => {
+  const bookingsPerKostengruppe = useMemo(() => {
+    const counts: Record<string, number> = {};
+    belegbuchungen.forEach((b) => {
       const kgId = extractRecordId(b.fields.kostengruppe);
-      const betrag = b.fields.betrag ?? 0;
       if (kgId) {
-        groupMap.set(kgId, (groupMap.get(kgId) ?? 0) + betrag);
-      } else {
-        unassigned += betrag;
+        counts[kgId] = (counts[kgId] || 0) + 1;
       }
     });
+    return counts;
+  }, [belegbuchungen]);
 
-    groupMap.forEach((total, id) => {
-      const kg = kgMap.get(id);
-      groups.push({ id, name: kg?.fields.kostengruppenname || 'Unbenannt', total });
-    });
-
-    groups.sort((a, b) => b.total - a.total);
-    if (unassigned > 0) {
-      groups.push({ id: '_unassigned', name: 'Ohne Zuordnung', total: unassigned });
+  // Delete handlers
+  async function handleDeleteBeleg() {
+    if (!deleteBeleg) return;
+    try {
+      await LivingAppsService.deleteBelegbuchungenEntry(deleteBeleg.record_id);
+      toast.success('Beleg gelöscht');
+      setDeleteBeleg(null);
+      fetchData();
+    } catch (err) {
+      toast.error(
+        `Fehler beim Löschen: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`
+      );
     }
+  }
 
-    return groups;
-  }, [buchungen, kgMap]);
-
-  // Monthly chart data
-  const monthlyData = useMemo(() => {
-    const months = new Map<string, number>();
-    buchungen.forEach(b => {
-      if (!b.fields.belegdatum) return;
-      const dateStr = b.fields.belegdatum.split('T')[0];
-      const monthKey = dateStr.substring(0, 7); // YYYY-MM
-      months.set(monthKey, (months.get(monthKey) ?? 0) + (b.fields.betrag ?? 0));
-    });
-    return Array.from(months.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, total]) => {
-        let label: string;
-        try {
-          label = format(parseISO(month + '-01'), 'MMM yyyy', { locale: de });
-        } catch {
-          label = month;
-        }
-        return { month: label, betrag: Math.round(total * 100) / 100 };
-      });
-  }, [buchungen]);
-
-  // Filtered & sorted buchungen
-  const sortedBuchungen = useMemo(() => {
-    let filtered = [...buchungen];
-    if (belegartFilter !== 'all') {
-      filtered = filtered.filter(b => b.fields.belegart === belegartFilter);
+  async function handleDeleteKostengruppe() {
+    if (!deleteKostengruppe) return;
+    try {
+      await LivingAppsService.deleteKostengruppenEntry(deleteKostengruppe.record_id);
+      toast.success('Kostengruppe gelöscht');
+      setDeleteKostengruppe(null);
+      fetchData();
+    } catch (err) {
+      toast.error(
+        `Fehler beim Löschen: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`
+      );
     }
-    return filtered.sort((a, b) => {
-      const da = a.fields.belegdatum ?? '';
-      const db = b.fields.belegdatum ?? '';
-      return db.localeCompare(da);
-    });
-  }, [buchungen, belegartFilter]);
+  }
 
-  const sortedUebergaben = useMemo(
-    () => [...uebergaben].sort((a, b) => {
-      const da = a.fields.stichtag ?? '';
-      const db = b.fields.stichtag ?? '';
-      return db.localeCompare(da);
-    }),
-    [uebergaben],
-  );
+  async function handleDeleteUebergabe() {
+    if (!deleteUebergabe) return;
+    try {
+      await LivingAppsService.deleteSteuerberaterUebergabenEntry(deleteUebergabe.record_id);
+      toast.success('Übergabe gelöscht');
+      setDeleteUebergabe(null);
+      fetchData();
+    } catch (err) {
+      toast.error(
+        `Fehler beim Löschen: ${err instanceof Error ? err.message : 'Unbekannter Fehler'}`
+      );
+    }
+  }
 
-  // ─── Render states ─────────────────────────────────────────────────────
-
+  // Render states
   if (loading) return <LoadingState />;
-  if (error) return <ErrorState error={error} onRetry={fetchData} />;
 
-  const breakdownTotal = kgBreakdown.reduce((s, g) => s + g.total, 0);
-
-  const buchungenToShow = showAllBuchungen ? sortedBuchungen : sortedBuchungen.slice(0, 20);
-  const uebergabenToShow = showAllUebergaben ? sortedUebergaben : sortedUebergaben.slice(0, 5);
+  if (error) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Card className="max-w-md w-full">
+          <CardContent className="pt-6 text-center">
+            <h2 className="text-lg font-semibold mb-2">Fehler beim Laden</h2>
+            <p className="text-muted-foreground mb-4">{error.message}</p>
+            <Button onClick={() => fetchData()}>Erneut versuchen</Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* ── Header ────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-30 bg-background/95 backdrop-blur border-b border-border">
-        <div className="max-w-[1280px] mx-auto px-4 md:px-8 py-4 flex items-center justify-between">
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight">Buchhaltungs-Manager</h1>
-          <Button onClick={() => { setEditBuchung(null); setShowBuchungDialog(true); }} className="hidden md:flex">
-            <Plus className="h-4 w-4 mr-2" /> Neue Buchung erfassen
-          </Button>
-        </div>
-      </header>
+    <>
+      <Toaster position="top-right" />
 
-      <main className="max-w-[1280px] mx-auto px-4 md:px-8 py-6 md:py-8">
-        <div className="flex flex-col lg:flex-row gap-5 lg:gap-6">
+      {/* Desktop Layout */}
+      <div className="min-h-screen bg-background">
+        {/* Header */}
+        <header className="border-b bg-card sticky top-0 z-40">
+          <div className="max-w-7xl mx-auto px-4 md:px-6 py-4 flex items-center justify-between">
+            <h1 className="text-xl md:text-2xl font-semibold text-foreground">
+              Buchhaltungs-Manager
+            </h1>
+            <Button
+              onClick={() => {
+                setEditBeleg(null);
+                setShowBelegDialog(true);
+              }}
+              className="hidden md:flex"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Neuen Beleg erfassen
+            </Button>
+          </div>
+        </header>
 
-          {/* ── Left Column (65%) ─────────────────────────────────────── */}
-          <div className="lg:w-[65%] space-y-5 lg:space-y-6">
+        <main className="max-w-7xl mx-auto px-4 md:px-6 py-6">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6">
+            {/* Left Column */}
+            <div className="space-y-6">
+              {/* Hero KPI Card */}
+              <Card className="relative overflow-hidden border-l-[3px] border-l-primary shadow-sm">
+                <div className="absolute inset-0 bg-gradient-to-r from-[hsl(40_20%_97%)] to-[hsl(40_15%_99%)]" />
+                <CardContent className="relative py-8 px-6">
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground mb-2">
+                    Gesamtbetrag
+                  </p>
+                  <p className="text-4xl md:text-5xl font-light text-foreground mb-2">
+                    {formatCurrency(totalBetrag)}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    aus {belegbuchungen.length} Buchungen
+                  </p>
+                </CardContent>
+              </Card>
 
-            {/* Hero KPI */}
-            <Card className="border-l-4 border-l-primary shadow-sm hover:shadow-md transition-shadow">
-              <CardContent className="p-6 md:p-8">
-                <p className="text-xs font-light tracking-widest uppercase text-muted-foreground mb-1">
-                  Gesamtbetrag
-                </p>
-                <p className="text-4xl md:text-5xl font-bold tracking-tight">
-                  {formatCurrency(totalBetrag)}
-                </p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  aus {buchungen.length} Buchungen
-                </p>
+              {/* Quick Stats Row */}
+              <div className="flex gap-4 overflow-x-auto pb-2 -mx-4 px-4 md:mx-0 md:px-0 md:grid md:grid-cols-3">
+                <Card className="min-w-[140px] flex-shrink-0 md:min-w-0">
+                  <CardContent className="py-4 px-4 flex items-center gap-3">
+                    <div className="p-2 rounded-full bg-[hsl(160_60%_95%)]">
+                      <TrendingUp className="h-4 w-4 text-[hsl(160_60%_40%)]" />
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Einnahmen</p>
+                      <p className="text-lg font-semibold text-[hsl(160_60%_40%)]">
+                        {formatCurrency(einnahmen)}
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
 
-                {/* Breakdown bar */}
-                {kgBreakdown.length > 0 && breakdownTotal > 0 && (
-                  <div className="mt-6">
-                    <div className="flex h-3 rounded-full overflow-hidden bg-muted">
-                      {kgBreakdown.map((g, i) => {
-                        const pct = (g.total / breakdownTotal) * 100;
-                        if (pct < 0.5) return null;
-                        return (
-                          <div
-                            key={g.id}
-                            className="h-full transition-all relative group"
-                            style={{
-                              width: `${pct}%`,
-                              backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
+                <Card className="min-w-[140px] flex-shrink-0 md:min-w-0">
+                  <CardContent className="py-4 px-4 flex items-center gap-3">
+                    <div className="p-2 rounded-full bg-[hsl(0_65%_95%)]">
+                      <TrendingDown className="h-4 w-4 text-destructive" />
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Ausgaben</p>
+                      <p className="text-lg font-semibold text-destructive">
+                        {formatCurrency(ausgaben)}
+                      </p>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="min-w-[140px] flex-shrink-0 md:min-w-0">
+                  <CardContent className="py-4 px-4 flex items-center gap-3">
+                    <div className="p-2 rounded-full bg-muted">
+                      <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Kostengruppen</p>
+                      <p className="text-lg font-semibold">{kostengruppen.length}</p>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Chart */}
+              {chartData.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-4">
+                    <CardTitle className="text-base font-medium">
+                      Buchungsverlauf (letzte 30 Tage)
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="h-[200px] md:h-[250px]">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={chartData}>
+                          <defs>
+                            <linearGradient id="colorValue" x1="0" y1="0" x2="0" y2="1">
+                              <stop
+                                offset="5%"
+                                stopColor="hsl(175 60% 35%)"
+                                stopOpacity={0.3}
+                              />
+                              <stop
+                                offset="95%"
+                                stopColor="hsl(175 60% 35%)"
+                                stopOpacity={0}
+                              />
+                            </linearGradient>
+                          </defs>
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 11 }}
+                            stroke="hsl(220 10% 50%)"
+                            tickLine={false}
+                            axisLine={false}
+                          />
+                          <YAxis
+                            tick={{ fontSize: 11 }}
+                            stroke="hsl(220 10% 50%)"
+                            tickLine={false}
+                            axisLine={false}
+                            tickFormatter={(v) => `${v}€`}
+                            className="hidden md:block"
+                          />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: 'hsl(0 0% 100%)',
+                              border: '1px solid hsl(220 15% 90%)',
+                              borderRadius: '8px',
                             }}
-                            title={`${g.name}: ${formatCurrency(g.total)} (${pct.toFixed(1)}%)`}
+                            formatter={(value: number) => [formatCurrency(value), 'Betrag']}
                           />
-                        );
-                      })}
-                    </div>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3">
-                      {kgBreakdown.map((g, i) => (
-                        <div key={g.id} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <span
-                            className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0"
-                            style={{ backgroundColor: CATEGORY_COLORS[i % CATEGORY_COLORS.length] }}
+                          <Area
+                            type="monotone"
+                            dataKey="value"
+                            stroke="hsl(175 60% 35%)"
+                            strokeWidth={2}
+                            fill="url(#colorValue)"
                           />
-                          <span>{g.name}</span>
-                          <span className="font-medium text-foreground">{formatCurrency(g.total)}</span>
-                        </div>
-                      ))}
+                        </AreaChart>
+                      </ResponsiveContainer>
                     </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                  </CardContent>
+                </Card>
+              )}
 
-            {/* Quick Stats - Mobile only */}
-            <div className="flex gap-3 overflow-x-auto pb-1 lg:hidden snap-x snap-mandatory">
-              <div className="flex-shrink-0 snap-start bg-card rounded-lg border px-4 py-3 min-w-[140px] border-l-4 border-l-[hsl(152_55%_40%)]">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-                  <TrendingUp className="h-3 w-3 text-[hsl(152,55%,40%)]" /> Einnahmen
-                </div>
-                <p className="text-lg font-bold">{formatCurrency(einnahmen)}</p>
-              </div>
-              <div className="flex-shrink-0 snap-start bg-card rounded-lg border px-4 py-3 min-w-[140px] border-l-4 border-l-destructive">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-                  <TrendingDown className="h-3 w-3 text-destructive" /> Ausgaben
-                </div>
-                <p className="text-lg font-bold">{formatCurrency(ausgaben)}</p>
-              </div>
-              <div className="flex-shrink-0 snap-start bg-card rounded-lg border px-4 py-3 min-w-[140px] border-l-4 border-l-primary">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-                  <Receipt className="h-3 w-3 text-primary" /> Diese Woche
-                </div>
-                <p className="text-lg font-bold">{belegeThisWeek}</p>
-              </div>
-            </div>
-
-            {/* Chart */}
-            <Card className="shadow-sm">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-lg font-semibold">Monatsverlauf</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {monthlyData.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-12">Noch keine Daten vorhanden.</p>
-                ) : (
-                  <div className="h-[240px] md:h-[320px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={monthlyData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                        <defs>
-                          <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="hsl(185 62% 34%)" stopOpacity={0.2} />
-                            <stop offset="95%" stopColor="hsl(185 62% 34%)" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <XAxis
-                          dataKey="month"
-                          tick={{ fontSize: 11 }}
-                          stroke="hsl(215 15% 50%)"
-                          tickLine={false}
-                          axisLine={false}
-                        />
-                        <YAxis
-                          tick={{ fontSize: 11 }}
-                          stroke="hsl(215 15% 50%)"
-                          tickLine={false}
-                          axisLine={false}
-                          tickFormatter={v => `${(v / 1000).toFixed(0)}k`}
-                          className="hidden md:block"
-                          hide={false}
-                        />
-                        <Tooltip
-                          contentStyle={{
-                            backgroundColor: 'hsl(0 0% 100%)',
-                            border: '1px solid hsl(210 18% 90%)',
-                            borderRadius: '8px',
-                            fontSize: '13px',
+              {/* Buchungen Table (Desktop) */}
+              <Card className="hidden md:block">
+                <CardHeader className="pb-4">
+                  <CardTitle className="text-base font-medium">
+                    Alle Buchungen
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="px-0">
+                  {sortedBelegbuchungen.length === 0 ? (
+                    <EmptyState
+                      title="Keine Buchungen"
+                      description="Erfassen Sie Ihren ersten Beleg, um loszulegen."
+                      action={
+                        <Button
+                          onClick={() => {
+                            setEditBeleg(null);
+                            setShowBelegDialog(true);
                           }}
-                          formatter={(value: number) => [formatCurrency(value), 'Betrag']}
-                        />
-                        <Area
-                          type="monotone"
-                          dataKey="betrag"
-                          stroke="hsl(185 62% 34%)"
-                          strokeWidth={2}
-                          fill="url(#areaFill)"
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+                        >
+                          <Plus className="h-4 w-4 mr-2" />
+                          Ersten Beleg erfassen
+                        </Button>
+                      }
+                    />
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Datum</TableHead>
+                          <TableHead>Belegnr.</TableHead>
+                          <TableHead className="max-w-[200px]">Beschreibung</TableHead>
+                          <TableHead>Belegart</TableHead>
+                          <TableHead>Kostengruppe</TableHead>
+                          <TableHead className="text-right">Betrag</TableHead>
+                          <TableHead className="w-[80px]"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {sortedBelegbuchungen.map((beleg) => {
+                          const kgId = extractRecordId(beleg.fields.kostengruppe);
+                          const kg = kgId ? kostengruppenMap.get(kgId) : null;
+                          return (
+                            <TableRow key={beleg.record_id} className="group">
+                              <TableCell>{formatDate(beleg.fields.belegdatum)}</TableCell>
+                              <TableCell className="font-medium">
+                                {beleg.fields.belegnummer || '-'}
+                              </TableCell>
+                              <TableCell className="max-w-[200px] truncate">
+                                {beleg.fields.belegbeschreibung || '-'}
+                              </TableCell>
+                              <TableCell>
+                                {beleg.fields.belegart && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    {BELEGART_LABELS[beleg.fields.belegart] ||
+                                      beleg.fields.belegart}
+                                  </Badge>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                {kg?.fields.kostengruppenname || '-'}
+                              </TableCell>
+                              <TableCell className="text-right font-medium">
+                                {formatCurrency(beleg.fields.betrag)}
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8"
+                                    onClick={() => {
+                                      setEditBeleg(beleg);
+                                      setShowBelegDialog(true);
+                                    }}
+                                  >
+                                    <Pencil className="h-4 w-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-destructive hover:text-destructive"
+                                    onClick={() => setDeleteBeleg(beleg)}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  )}
+                </CardContent>
+              </Card>
 
-            {/* Belegbuchungen Table / List */}
-            <Card className="shadow-sm">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between flex-wrap gap-3">
-                  <CardTitle className="text-lg font-semibold">Belegbuchungen</CardTitle>
-                  <div className="flex items-center gap-2">
-                    <Select
-                      value={belegartFilter}
-                      onValueChange={setBelegartFilter}
-                    >
-                      <SelectTrigger className="w-[180px] h-8 text-sm">
-                        <SelectValue placeholder="Alle Belegarten" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Alle Belegarten</SelectItem>
-                        {Object.entries(BELEGART_LABELS).map(([key, label]) => (
-                          <SelectItem key={key} value={key}>{label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => { setEditBuchung(null); setShowBuchungDialog(true); }}
-                    >
-                      <Plus className="h-4 w-4 mr-1" /> Neu
-                    </Button>
-                  </div>
+              {/* Buchungen List (Mobile) */}
+              <div className="md:hidden space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base font-medium">Letzte Buchungen</h2>
                 </div>
-              </CardHeader>
-              <CardContent>
-                {sortedBuchungen.length === 0 ? (
-                  <EmptyListState title="Noch keine Buchungen vorhanden." onAdd={() => { setEditBuchung(null); setShowBuchungDialog(true); }} />
+                {sortedBelegbuchungen.length === 0 ? (
+                  <EmptyState
+                    title="Keine Buchungen"
+                    description="Tippen Sie auf + um Ihren ersten Beleg zu erfassen."
+                  />
                 ) : (
-                  <>
-                    {/* Desktop Table */}
-                    <div className="hidden md:block overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="w-[100px]">Datum</TableHead>
-                            <TableHead>Belegnr.</TableHead>
-                            <TableHead className="hidden lg:table-cell">Beschreibung</TableHead>
-                            <TableHead>Belegart</TableHead>
-                            <TableHead className="hidden lg:table-cell">Kostengruppe</TableHead>
-                            <TableHead className="text-right">Betrag</TableHead>
-                            <TableHead className="w-[80px]" />
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {buchungenToShow.map(b => {
-                            const kgId = extractRecordId(b.fields.kostengruppe);
-                            const kgName = kgId ? kgMap.get(kgId)?.fields.kostengruppenname : null;
-                            return (
-                              <TableRow key={b.record_id} className="group hover:bg-muted/50 transition-colors">
-                                <TableCell className="text-sm">{formatDate(b.fields.belegdatum)}</TableCell>
-                                <TableCell className="text-sm font-medium">{b.fields.belegnummer || '-'}</TableCell>
-                                <TableCell className="text-sm text-muted-foreground hidden lg:table-cell max-w-[200px] truncate">
-                                  {b.fields.belegbeschreibung || '-'}
-                                </TableCell>
-                                <TableCell>
-                                  {b.fields.belegart ? (
-                                    <Badge variant="secondary" className="text-xs font-normal">
-                                      {BELEGART_LABELS[b.fields.belegart] || b.fields.belegart}
-                                    </Badge>
-                                  ) : '-'}
-                                </TableCell>
-                                <TableCell className="text-sm hidden lg:table-cell">{kgName || '-'}</TableCell>
-                                <TableCell className="text-right font-medium text-sm">
-                                  {formatCurrency(b.fields.betrag)}
-                                </TableCell>
-                                <TableCell>
-                                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-7 w-7"
-                                      onClick={() => { setEditBuchung(b); setShowBuchungDialog(true); }}
-                                    >
-                                      <Pencil className="h-3.5 w-3.5" />
-                                    </Button>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      className="h-7 w-7 text-destructive hover:text-destructive"
-                                      onClick={() => setDeleteBuchung(b)}
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </div>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-
-                    {/* Mobile List */}
-                    <div className="md:hidden space-y-2">
-                      {buchungenToShow.map(b => {
-                        const kgId = extractRecordId(b.fields.kostengruppe);
-                        const kgName = kgId ? kgMap.get(kgId)?.fields.kostengruppenname : null;
-                        return (
-                          <div
-                            key={b.record_id}
-                            className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors"
-                          >
-                            <div className="flex-1 min-w-0 mr-3">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium truncate">{b.fields.belegnummer || 'Ohne Nr.'}</span>
-                                {b.fields.belegart && (
-                                  <Badge variant="secondary" className="text-[10px] font-normal flex-shrink-0">
-                                    {BELEGART_LABELS[b.fields.belegart] || b.fields.belegart}
+                  <div className="space-y-3">
+                    {sortedBelegbuchungen.slice(0, 5).map((beleg) => (
+                      <Card
+                        key={beleg.record_id}
+                        className="cursor-pointer hover:shadow-md transition-shadow"
+                        onClick={() => {
+                          setEditBeleg(beleg);
+                          setShowBelegDialog(true);
+                        }}
+                      >
+                        <CardContent className="py-3 px-4">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-medium text-sm">
+                                  {beleg.fields.belegnummer || '-'}
+                                </span>
+                                {beleg.fields.belegart && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    {BELEGART_LABELS[beleg.fields.belegart] ||
+                                      beleg.fields.belegart}
                                   </Badge>
                                 )}
                               </div>
-                              <p className="text-xs text-muted-foreground truncate mt-0.5">
-                                {formatDate(b.fields.belegdatum)}
-                                {kgName && ` · ${kgName}`}
+                              <p className="text-xs text-muted-foreground">
+                                {formatDate(beleg.fields.belegdatum)}
                               </p>
                             </div>
-                            <div className="flex items-center gap-2 flex-shrink-0">
-                              <span className="font-semibold text-sm">{formatCurrency(b.fields.betrag)}</span>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => { setEditBuchung(b); setShowBuchungDialog(true); }}
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-destructive"
-                                onClick={() => setDeleteBuchung(b)}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
+                            <p className="font-semibold text-right">
+                              {formatCurrency(beleg.fields.betrag)}
+                            </p>
                           </div>
-                        );
-                      })}
-                    </div>
-
-                    {!showAllBuchungen && sortedBuchungen.length > 20 && (
-                      <div className="text-center mt-4">
-                        <Button variant="ghost" size="sm" onClick={() => setShowAllBuchungen(true)}>
-                          Alle {sortedBuchungen.length} Buchungen anzeigen
-                        </Button>
-                      </div>
-                    )}
-                  </>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
                 )}
-              </CardContent>
-            </Card>
-          </div>
+              </div>
 
-          {/* ── Right Column (35%) ────────────────────────────────────── */}
-          <div className="lg:w-[35%] space-y-5 lg:space-y-6">
+              {/* Kostengruppen Section (Mobile - Collapsible) */}
+              <div className="md:hidden">
+                <Collapsible open={kostengruppenOpen} onOpenChange={setKostengruppenOpen}>
+                  <Card>
+                    <CollapsibleTrigger asChild>
+                      <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-base font-medium">
+                            Kostengruppen
+                          </CardTitle>
+                          {kostengruppenOpen ? (
+                            <ChevronDown className="h-5 w-5 text-muted-foreground" />
+                          ) : (
+                            <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                          )}
+                        </div>
+                      </CardHeader>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <CardContent className="pt-0">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full mb-4"
+                          onClick={() => {
+                            setEditKostengruppe(null);
+                            setShowKostengruppeDialog(true);
+                          }}
+                        >
+                          <Plus className="h-4 w-4 mr-2" />
+                          Neue Kostengruppe
+                        </Button>
+                        {kostengruppen.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            Keine Kostengruppen vorhanden
+                          </p>
+                        ) : (
+                          <div className="grid grid-cols-2 gap-2">
+                            {kostengruppen.map((kg) => (
+                              <div
+                                key={kg.record_id}
+                                className="p-3 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors"
+                                onClick={() => {
+                                  setEditKostengruppe(kg);
+                                  setShowKostengruppeDialog(true);
+                                }}
+                              >
+                                <p className="font-medium text-sm truncate">
+                                  {kg.fields.kostengruppenname || 'Unbenannt'}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {bookingsPerKostengruppe[kg.record_id] || 0} Buchungen
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </CollapsibleContent>
+                  </Card>
+                </Collapsible>
+              </div>
 
-            {/* Quick Stats - Desktop only */}
-            <div className="hidden lg:block space-y-0">
-              <Card className="rounded-b-none border-b-0 border-l-4 border-l-[hsl(152,55%,40%)] shadow-sm">
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-                    <TrendingUp className="h-3.5 w-3.5 text-[hsl(152,55%,40%)]" /> Einnahmen
+              {/* Übergaben Section (Mobile - Collapsible) */}
+              <div className="md:hidden">
+                <Collapsible open={uebergabenOpen} onOpenChange={setUebergabenOpen}>
+                  <Card>
+                    <CollapsibleTrigger asChild>
+                      <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors">
+                        <div className="flex items-center justify-between">
+                          <CardTitle className="text-base font-medium">
+                            Steuerberater-Übergaben
+                          </CardTitle>
+                          {uebergabenOpen ? (
+                            <ChevronDown className="h-5 w-5 text-muted-foreground" />
+                          ) : (
+                            <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                          )}
+                        </div>
+                      </CardHeader>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <CardContent className="pt-0">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full mb-4"
+                          onClick={() => {
+                            setEditUebergabe(null);
+                            setShowUebergabeDialog(true);
+                          }}
+                        >
+                          <Plus className="h-4 w-4 mr-2" />
+                          Neue Übergabe
+                        </Button>
+                        {uebergaben.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            Keine Übergaben vorhanden
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            {uebergaben.map((ueb) => (
+                              <div
+                                key={ueb.record_id}
+                                className="p-3 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors"
+                                onClick={() => {
+                                  setEditUebergabe(ueb);
+                                  setShowUebergabeDialog(true);
+                                }}
+                              >
+                                <p className="font-medium text-sm">
+                                  Stichtag: {formatDate(ueb.fields.stichtag)}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {formatDate(ueb.fields.periode_von)} -{' '}
+                                  {formatDate(ueb.fields.periode_bis)}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </CollapsibleContent>
+                  </Card>
+                </Collapsible>
+              </div>
+            </div>
+
+            {/* Right Column (Desktop only) */}
+            <div className="hidden lg:block space-y-6">
+              {/* Kostengruppen */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base font-medium">
+                      Kostengruppen
+                    </CardTitle>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setEditKostengruppe(null);
+                        setShowKostengruppeDialog(true);
+                      }}
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Neu
+                    </Button>
                   </div>
-                  <p className="text-xl font-bold">{formatCurrency(einnahmen)}</p>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {kostengruppen.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-4">
+                      Keine Kostengruppen vorhanden
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {kostengruppen.map((kg) => (
+                        <div
+                          key={kg.record_id}
+                          className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors group"
+                          onClick={() => {
+                            setEditKostengruppe(kg);
+                            setShowKostengruppeDialog(true);
+                          }}
+                        >
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-sm truncate">
+                              {kg.fields.kostengruppenname || 'Unbenannt'}
+                            </p>
+                            {kg.fields.kostengruppennummer && (
+                              <p className="text-xs text-muted-foreground">
+                                Nr. {kg.fields.kostengruppennummer}
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="secondary" className="text-xs">
+                              {bookingsPerKostengruppe[kg.record_id] || 0}
+                            </Badge>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteKostengruppe(kg);
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
-              <Card className="rounded-none border-b-0 border-l-4 border-l-destructive shadow-sm">
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-                    <TrendingDown className="h-3.5 w-3.5 text-destructive" /> Ausgaben
+
+              {/* Steuerberater-Übergaben */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base font-medium">
+                      Steuerberater-Übergaben
+                    </CardTitle>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setEditUebergabe(null);
+                        setShowUebergabeDialog(true);
+                      }}
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Neu
+                    </Button>
                   </div>
-                  <p className="text-xl font-bold">{formatCurrency(ausgaben)}</p>
-                </CardContent>
-              </Card>
-              <Card className="rounded-t-none border-l-4 border-l-primary shadow-sm">
-                <CardContent className="p-4">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-                    <Receipt className="h-3.5 w-3.5 text-primary" /> Belege diese Woche
-                  </div>
-                  <p className="text-xl font-bold">{belegeThisWeek}</p>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {uebergaben.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-4">
+                      Keine Übergaben vorhanden
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {[...uebergaben]
+                        .sort((a, b) =>
+                          (b.fields.stichtag || '').localeCompare(
+                            a.fields.stichtag || ''
+                          )
+                        )
+                        .map((ueb) => (
+                          <div
+                            key={ueb.record_id}
+                            className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors group"
+                            onClick={() => {
+                              setEditUebergabe(ueb);
+                              setShowUebergabeDialog(true);
+                            }}
+                          >
+                            <div>
+                              <p className="font-medium text-sm">
+                                {formatDate(ueb.fields.stichtag)}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {formatDate(ueb.fields.periode_von)} –{' '}
+                                {formatDate(ueb.fields.periode_bis)}
+                              </p>
+                            </div>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteUebergabe(ueb);
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
-
-            {/* Kostengruppen */}
-            <Card className="shadow-sm">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg font-semibold">Kostengruppen</CardTitle>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-8 w-8"
-                    onClick={() => { setEditKg(null); setShowKgDialog(true); }}
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {kostengruppen.length === 0 ? (
-                  <EmptyListState title="Noch keine Kostengruppen." onAdd={() => { setEditKg(null); setShowKgDialog(true); }} />
-                ) : (
-                  <div className="space-y-1">
-                    {[...kostengruppen]
-                      .sort((a, b) => (a.fields.kostengruppenname ?? '').localeCompare(b.fields.kostengruppenname ?? ''))
-                      .map(kg => {
-                        const kgTotal = buchungen
-                          .filter(b => extractRecordId(b.fields.kostengruppe) === kg.record_id)
-                          .reduce((s, b) => s + (b.fields.betrag ?? 0), 0);
-                        return (
-                          <div
-                            key={kg.record_id}
-                            className="group flex items-center justify-between p-2.5 rounded-lg hover:bg-muted/50 transition-colors"
-                          >
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium">{kg.fields.kostengruppenname || 'Unbenannt'}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {kg.fields.kostengruppennummer && `Nr. ${kg.fields.kostengruppennummer} · `}
-                                {formatCurrency(kgTotal)}
-                              </p>
-                            </div>
-                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => { setEditKg(kg); setShowKgDialog(true); }}
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-destructive hover:text-destructive"
-                                onClick={() => setDeleteKg(kg)}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Steuerberater-Übergaben */}
-            <Card className="shadow-sm">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-lg font-semibold">Übergaben</CardTitle>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-8 w-8"
-                    onClick={() => { setEditUe(null); setShowUeDialog(true); }}
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {uebergaben.length === 0 ? (
-                  <EmptyListState title="Noch keine Übergaben." onAdd={() => { setEditUe(null); setShowUeDialog(true); }} />
-                ) : (
-                  <div className="space-y-1">
-                    {uebergabenToShow.map(ue => (
-                      <div
-                        key={ue.record_id}
-                        className="group flex items-center justify-between p-2.5 rounded-lg hover:bg-muted/50 transition-colors"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium">Stichtag: {formatDate(ue.fields.stichtag)}</p>
-                          <p className="text-xs text-muted-foreground">
-                            Periode: {formatDate(ue.fields.periode_von)} - {formatDate(ue.fields.periode_bis)}
-                          </p>
-                          {ue.fields.bemerkungen && (
-                            <p className="text-xs text-muted-foreground truncate max-w-[200px] mt-0.5">
-                              {ue.fields.bemerkungen}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7"
-                            onClick={() => { setEditUe(ue); setShowUeDialog(true); }}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 text-destructive hover:text-destructive"
-                            onClick={() => setDeleteUe(ue)}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                    {!showAllUebergaben && sortedUebergaben.length > 5 && (
-                      <div className="text-center mt-2">
-                        <Button variant="ghost" size="sm" onClick={() => setShowAllUebergaben(true)}>
-                          Alle {sortedUebergaben.length} anzeigen
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
           </div>
-        </div>
-      </main>
+        </main>
 
-      {/* ── Mobile FAB ──────────────────────────────────────────────── */}
-      <button
-        className="md:hidden fixed bottom-6 right-6 z-40 w-14 h-14 rounded-full bg-primary text-primary-foreground shadow-lg flex items-center justify-center hover:scale-105 active:scale-95 transition-transform"
-        onClick={() => { setEditBuchung(null); setShowBuchungDialog(true); }}
-        aria-label="Neue Buchung erfassen"
-      >
-        <Plus className="h-6 w-6" />
-      </button>
+        {/* Mobile FAB */}
+        <Button
+          className="fixed bottom-6 right-6 h-14 w-14 rounded-full shadow-lg md:hidden"
+          size="icon"
+          onClick={() => {
+            setEditBeleg(null);
+            setShowBelegDialog(true);
+          }}
+        >
+          <Plus className="h-6 w-6" />
+        </Button>
+      </div>
 
-      {/* ── Dialogs ─────────────────────────────────────────────────── */}
-      <BelegbuchungenDialog
-        open={showBuchungDialog}
-        onOpenChange={setShowBuchungDialog}
-        record={editBuchung}
-        onSuccess={refreshBuchungen}
+      {/* Dialogs */}
+      <BelegDialog
+        open={showBelegDialog}
+        onOpenChange={setShowBelegDialog}
+        record={editBeleg}
         kostengruppen={kostengruppen}
+        onSuccess={fetchData}
       />
 
-      <KostengruppenDialog
-        open={showKgDialog}
-        onOpenChange={setShowKgDialog}
-        record={editKg}
-        onSuccess={refreshKostengruppen}
+      <KostengruppeDialog
+        open={showKostengruppeDialog}
+        onOpenChange={setShowKostengruppeDialog}
+        record={editKostengruppe}
+        onSuccess={fetchData}
       />
 
-      <UebergabenDialog
-        open={showUeDialog}
-        onOpenChange={setShowUeDialog}
-        record={editUe}
-        onSuccess={refreshUebergaben}
-      />
-
-      <DeleteConfirmDialog
-        open={!!deleteBuchung}
-        onOpenChange={v => { if (!v) setDeleteBuchung(null); }}
-        recordName={deleteBuchung?.fields.belegnummer || 'Buchung'}
-        onConfirm={async () => {
-          if (!deleteBuchung) return;
-          await LivingAppsService.deleteBelegbuchungenEntry(deleteBuchung.record_id);
-          setDeleteBuchung(null);
-          refreshBuchungen();
-        }}
+      <UebergabeDialog
+        open={showUebergabeDialog}
+        onOpenChange={setShowUebergabeDialog}
+        record={editUebergabe}
+        onSuccess={fetchData}
       />
 
       <DeleteConfirmDialog
-        open={!!deleteKg}
-        onOpenChange={v => { if (!v) setDeleteKg(null); }}
-        recordName={deleteKg?.fields.kostengruppenname || 'Kostengruppe'}
-        onConfirm={async () => {
-          if (!deleteKg) return;
-          await LivingAppsService.deleteKostengruppenEntry(deleteKg.record_id);
-          setDeleteKg(null);
-          refreshKostengruppen();
-        }}
+        open={!!deleteBeleg}
+        onOpenChange={(open) => !open && setDeleteBeleg(null)}
+        title="Beleg löschen?"
+        description={`Möchtest du den Beleg "${deleteBeleg?.fields.belegnummer || ''}" wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.`}
+        onConfirm={handleDeleteBeleg}
       />
 
       <DeleteConfirmDialog
-        open={!!deleteUe}
-        onOpenChange={v => { if (!v) setDeleteUe(null); }}
-        recordName={deleteUe?.fields.stichtag ? `Übergabe vom ${formatDate(deleteUe.fields.stichtag)}` : 'Übergabe'}
-        onConfirm={async () => {
-          if (!deleteUe) return;
-          await LivingAppsService.deleteSteuerberaterUebergabenEntry(deleteUe.record_id);
-          setDeleteUe(null);
-          refreshUebergaben();
-        }}
+        open={!!deleteKostengruppe}
+        onOpenChange={(open) => !open && setDeleteKostengruppe(null)}
+        title="Kostengruppe löschen?"
+        description={`Möchtest du die Kostengruppe "${deleteKostengruppe?.fields.kostengruppenname || ''}" wirklich löschen? Verknüpfte Buchungen verlieren ihre Zuordnung.`}
+        onConfirm={handleDeleteKostengruppe}
       />
-    </div>
+
+      <DeleteConfirmDialog
+        open={!!deleteUebergabe}
+        onOpenChange={(open) => !open && setDeleteUebergabe(null)}
+        title="Übergabe löschen?"
+        description={`Möchtest du diese Übergabe vom ${formatDate(deleteUebergabe?.fields.stichtag)} wirklich löschen?`}
+        onConfirm={handleDeleteUebergabe}
+      />
+    </>
   );
 }

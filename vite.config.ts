@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
 export default defineConfig({ 
-  base: '/698db1f9537b8925e19898a4/',
+  base: '/github/698db1f9537b8925e19898a4/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

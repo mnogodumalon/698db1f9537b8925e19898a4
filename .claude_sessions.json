@@ -1,0 +1,11 @@
+{
+  "sessions": [
+    {
+      "id": "e26a99b3-5440-4ab4-a56e-2cb41517647a",
+      "name": "2026-02-23 10:10 - Initial build: Buchhaltungs-Ma...",
+      "created_at": "2026-02-23T10:10:50.365815Z",
+      "last_used": "2026-02-23T10:10:50.365815Z"
+    }
+  ],
+  "active_session": "e26a99b3-5440-4ab4-a56e-2cb41517647a"
+}
